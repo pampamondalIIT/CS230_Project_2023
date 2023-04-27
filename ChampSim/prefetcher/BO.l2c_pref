@@ -1,0 +1,259 @@
+#include "cache.h"
+#include <vector>
+#include <cmath>
+#include <algorithm>
+#include <chrono>
+#include <thread>
+#define SCORE_MAX 31   //max score  can be scored by an offset.
+#define ROUND_MAX 100   // max rounds possible
+#define NUM_BANKS 2     // number of sets in the RR table
+#define BANK_SIZE 64    // Each bank has 64 entries
+#define TAG_SIZE  12    // each address stored as 12 bit tag.
+#define BAD_SCORE 5
+
+//Didn't Implemented Delay_queue
+
+const int MAX_OFFSET = 64;
+
+//Define the RR table
+uint16_t tags_[NUM_BANKS][BANK_SIZE];  // RR table data structure
+
+
+// Define the number of bits used for the hash function
+const int HASH_BITS = 6;
+
+// Define the hash function masks
+const int HASH_MASK1 = (1 << HASH_BITS) - 1;
+const int HASH_MASK2 = (1 << (HASH_BITS + 1)) - 1;
+
+// Define the hash functions
+int hash_func_1(uint64_t addr) {
+    return (addr >> LOG2_BLOCK_SIZE) & HASH_MASK1;
+}
+
+int hash_func_2(uint64_t addr) {
+    return ((addr >> LOG2_BLOCK_SIZE) & HASH_MASK2) ^ ((addr >> LOG2_BLOCK_SIZE - HASH_BITS) & HASH_MASK2);
+}
+
+//global to count
+
+uint16_t offset_count = 0;
+
+//global offset list
+
+vector<uint16_t> offsets;
+vector<uint16_t> scores;
+uint16_t rounds;
+uint16_t best_offset;
+
+
+
+
+uint16_t get_tag_(uint64_t addr)  {
+        // extract the lower bits of the address to form the tag
+        return static_cast<uint16_t>(addr & ((1ull << TAG_SIZE) - 1));
+    }
+
+
+
+
+
+struct Entry {
+        uint16_t addr;  // 12 tag bits to store in the RR table
+        bool valid;     // 1 valid bit
+        uint16_t  time=0;  // 12-bit time value
+    };
+
+//Class Delayqueue   
+//Implementation
+class DelayQueue {
+public:
+    
+	struct Entry entries[15];   //total number of entires
+	int fill_index;            //index fill upto
+	
+	uint64_t  current_clock;
+    void Enqueue(uint64_t addr, uint64_t current_cycle) {
+       struct  Entry entry;
+        entry.addr = get_tag_(addr);  // Keep only 12 tag bits
+        entry.valid = true;
+	
+    }
+
+  
+};
+
+
+//To check if there is a hit in the RR table
+
+bool lookup_for_the_addr(uint64_t addr) {
+        // compute hash values for the address using two different hashing functions
+        uint32_t hash1 = hash_func_1(addr) % BANK_SIZE;
+        uint32_t hash2 = hash_func_2(addr) % BANK_SIZE;
+
+        // check for a tag match in either bank
+        
+            if (tags_[0][hash1] == get_tag_(addr) || tags_[1][hash2] == get_tag_(addr)) 
+                return true;
+            
+        
+
+        return false;
+  }
+
+
+
+
+
+
+//To insert a particular address in the in the RR table
+
+void insert_into_table(uint64_t addr) {
+        // compute hash values for the address using two different hashing functions
+        uint32_t hash1 = hash_func_1(addr) % BANK_SIZE;
+        uint32_t hash2 = hash_func_2(addr) % BANK_SIZE;
+
+        // insert the tag into both banks
+        
+           tags_[0][hash1] = get_tag_(addr);
+            tags_[1][hash2] = get_tag_(addr);
+        
+    }
+
+
+//Initialise the offsets.
+void CACHE::l2c_prefetcher_initialize() {
+
+// Create a list of offsets based on the rule of thumb
+
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 4; j++) {
+            for (int k = 0; k < 3; k++) {
+                int offset = pow(2, i) * pow(3, j) * pow(5, k);
+                if (offset < MAX_OFFSET && offset > 0) {
+                    offsets.push_back(offset);
+                    offsets.push_back(-offset);
+			scores.push_back(0);
+                    scores.push_back(0);
+                }
+            }
+        }
+    }
+   offsets.resize(46);
+scores.resize(46);
+//Implementation of the RR table
+
+memset(tags_, 0, sizeof(tags_));
+
+ }
+
+uint32_t CACHE::l2c_prefetcher_operate( uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in) 
+{
+
+//addr is the current demand address
+// ip is the instruction pointer of the of the current
+// whether it is a cache hit or not
+//type is the memory access type.
+
+
+
+    if (type != LOAD)
+        return metadata_in;
+
+
+// function to find the prefetch address
+// We need a offset list , best offset , RR table.
+
+    uint64_t pf_base_addr = (addr >> LOG2_BLOCK_SIZE); //block address
+	
+	uint64_t pf_addr ;
+
+	if(offset_count < 46 ){
+	uint64_t addr_to_check =( pf_base_addr- offsets[ offset_count])<< LOG2_BLOCK_SIZE;
+       
+	bool it_is = lookup_for_the_addr( addr_to_check);
+	 
+	if (it_is)
+	scores[offset_count] ++;
+	
+	
+         uint16_t maxElementIndex = std::max_element(scores.begin(),scores.end()) - scores.begin();
+         best_offset = offsets[maxElementIndex];
+         if((rounds == ROUND_MAX ) || (scores[maxElementIndex] == SCORE_MAX))
+
+
+	        best_offset = offsets[offset_count];
+
+	 pf_addr = ((addr >> LOG2_BLOCK_SIZE) + best_offset) << LOG2_BLOCK_SIZE;
+
+//Basically turning the prefetch ON and OFF based on BAD SCORE
+	if(scores[maxElementIndex] > BAD_SCORE)
+		
+
+
+   		 prefetch_line(ip, addr, pf_addr, FILL_L2, 0);
+	else
+		return metadata_in;
+
+
+	offset_count ++;
+	if(offset_count > 45)
+	{
+		rounds ++;
+		offset_count =0;
+}
+
+	}
+
+
+	
+	else
+		assert(0);
+		     	
+
+        
+    
+
+    DP(if (warmup_complete[cpu]) {
+        cout << "[" << NAME << "] " << __func__ << hex << " base_cl: " << (addr >> LOG2_BLOCK_SIZE);
+        cout << " pf_cl: " << (pf_addr >> LOG2_BLOCK_SIZE) << " ip: " << ip << " cache_hit: " << +cache_hit
+             << " type: " << +type << endl;
+    });
+
+
+// Basically turning prefetch ON and OFF based on MSHR occupancy.
+
+ // check the MSHR occupancy to decide if we're going to prefetch to the L2 or LLC
+            if (MSHR.occupancy < (MSHR.SIZE>>1))
+              prefetch_line(ip, addr, pf_addr, FILL_L2, 0);
+            else
+              prefetch_line(ip, addr, pf_addr, FILL_LLC, 0);
+
+
+
+
+    return metadata_in;
+}
+
+uint32_t CACHE::l2c_prefetcher_cache_fill( uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in) {
+
+
+//filling of the RR table here
+
+
+uint64_t recent_line_addr = (addr >> LOG2_BLOCK_SIZE);      //block address
+
+        
+uint64_t addr_to_insert  = (( recent_line_addr - best_offset)<< LOG2_BLOCK_SIZE);   //address of the block to insert in the RR
+insert_into_table(addr_to_insert);
+
+
+
+ return metadata_in;
+
+
+
+}
+
+void CACHE::l2c_prefetcher_final_stats() { cout << "CPU " << cpu << " L2C next line prefetcher final stats" << endl; }
+
