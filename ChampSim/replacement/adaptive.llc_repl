@@ -1,0 +1,191 @@
+#include "cache.h"
+#include <list>
+#include <vector>
+#include "block.h"
+#include "set.h"
+
+// initialize replacement state
+
+vector < BLOCK > ghost_list;
+
+void CACHE::llc_initialize_replacement()
+{
+    // initialize ghost list
+    ghost_list.clear();
+
+	// initialize all LRU counters to zero
+    for (uint32_t set = 0; set < NUM_SET; set++) {
+        for (uint32_t way = 0; way < NUM_WAY; way++) {
+            block[set][way].lfu = 0;
+        }
+    }
+}
+
+
+// find replacement victim
+uint32_t CACHE::llc_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    uint32_t way = 0;
+
+    // check if the missed item is in the ghost list
+    bool find = false;
+    uint64_t tag = full_addr / (64*LLC_SET); 
+    uint64_t vec_count = 0;
+    for (vec_count = 0; vec_count < ghost_list.size(); vec_count ++) 
+    {
+        
+        if (ghost_list[vec_count].tag == tag ) 
+
+        {   find = true;
+            for (way=0; way<NUM_WAY; way++) 
+            {
+                if (current_set[way].valid == false) 
+                {
+
+                    DP ( if (warmup_complete[cpu]) {
+                    cout << "[" << NAME << "] " << __func__ << " instr_id: " << instr_id << " invalid set: " << set << " way: " << way;
+                    cout << hex << " address: " << (full_addr>>LOG2_BLOCK_SIZE) << " victim address: " << block[set][way].address << " data: " << block[set][way].data;
+                    cout << dec << " lru: " << block[set][way].lru << endl; });
+
+                    block[set][way] = ghost_list[vec_count];
+        
+                    block[set][way].valid  = true;
+                    block[set][way].dirty = 1;
+                    break;
+                }
+            }
+
+
+
+            if(way == NUM_WAY) {
+
+                long long  lfu_victim_counter = LLONG_MAX;
+                for (uint32_t w  = 0; w < NUM_WAY; w++) 
+                {
+                    if(current_set[w].lfu < lfu_victim_counter) 
+                    {
+                        way = w;
+                        lfu_victim_counter = current_set[w].lfu;
+                    }
+                }
+
+                if(way != NUM_WAY) 
+                {
+
+                    DP ( if (warmup_complete[cpu]) {
+                    cout << "[" << NAME << "] " << __func__ << " instr_id: " << instr_id << " replace set: " << set << " way: " << way;
+                    cout << hex << " address: " << (full_addr>>LOG2_BLOCK_SIZE) << " victim address: " << block[set][way].address << " data: " << block[set][way].data;
+                    cout << dec << " lru: " << block[set][way].lru << endl; });
+                    ghost_list.push_back(current_set[way]);
+                    block[set][way]= ghost_list[vec_count] ;
+                }
+            }
+
+            return NUM_WAY;
+        }
+    } 
+
+
+	if (!find)
+    {
+
+
+	    way = 0;
+
+        // fill invalid line first
+        for (way=0; way<NUM_WAY; way++) 
+        {
+            if (block[set][way].valid == false) 
+            {
+
+                DP ( if (warmup_complete[cpu]) {
+                cout << "[" << NAME << "] " << __func__ << " instr_id: " << instr_id << " invalid set: " << set << " way: " << way;
+                cout << hex << " address: " << (full_addr>>LOG2_BLOCK_SIZE) << " victim address: " << block[set][way].address << " data: " << block[set][way].data;
+                cout << dec << " lru: " << block[set][way].lru << endl; });
+
+                break;
+            }
+        }
+    
+        // LFU victim
+        if (way == NUM_WAY)
+        {
+        
+            long long  lfu_victim_counter = LLONG_MAX;
+            for (uint32_t w  = 0; w < NUM_WAY; w++) 
+            {
+                if(current_set[w].lfu < lfu_victim_counter) 
+                {
+                    way = w;
+                    lfu_victim_counter = current_set[w].lfu;
+                }
+            }
+
+            if(way != NUM_WAY) {
+
+                DP ( if (warmup_complete[cpu]) {
+                cout << "[" << NAME << "] " << __func__ << " instr_id: " << instr_id << " replace set: " << set << " way: " << way;
+                cout << hex << " address: " << (full_addr>>LOG2_BLOCK_SIZE) << " victim address: " << block[set][way].address << " data: " << block[set][way].data;
+                cout << dec << " lru: " << block[set][way].lru << endl; });
+		        ghost_list.push_back(current_set[way]);
+            }
+        }
+
+        if (way == NUM_WAY) {
+            cerr << "[" << NAME << "] " << __func__ << " no victim! set: " << set << endl;
+            assert(0);
+        }
+
+    
+        return way;
+    }
+}
+
+
+
+// called on every cache hit and cache fill
+void CACHE::llc_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit)
+{
+
+//full_addr is the address -we are inserting
+// victim_addr 
+    	        
+  string TYPE_NAME;
+    if (type == LOAD)
+        TYPE_NAME = "LOAD";
+    else if (type == RFO)
+        TYPE_NAME = "RFO";
+    else if (type == PREFETCH)
+        TYPE_NAME = "PF";
+    else if (type == WRITEBACK)
+        TYPE_NAME = "WB";
+    else
+        assert(0);
+
+    if (hit)
+        TYPE_NAME += "_HIT";
+    else
+        TYPE_NAME += "_MISS";
+
+    if ((type == WRITEBACK) && ip)
+        assert(0);
+ // baseline LRU
+
+
+	if (!hit) {
+        // increment the LFU  counter of the newly inserted block
+      		 block[set][way].lfu= 0;
+        // increment the LRU counter of all other blocks in the set
+        
+        
+    } else 
+        // increment the LRU counter of the hit block
+       block[set][way].lfu ++;    
+
+return;
+
+}
+void CACHE::llc_replacement_final_stats()
+{
+
+}
